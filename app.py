@@ -1,3 +1,4 @@
+
 """ATS Resume Checker - Streamlit app powered by the Groq API."""
 
 import io
@@ -10,7 +11,14 @@ from docx import Document
 from pypdf import PdfReader
 
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-DEFAULT_MODEL = "llama-3.3-70b-versatile"
+DEFAULT_MODEL = "openai/gpt-oss-20b"
+PREFERRED_MODELS = [
+    "openai/gpt-oss-120b",
+    "llama-3.3-70b-versatile",
+    "openai/gpt-oss-20b",
+    "llama-3.1-8b-instant",
+]
+NON_CHAT_HINTS = ("whisper", "tts", "guard", "orpheus", "embed", "playai", "compound")
 MAX_RESUME_CHARS = 15000
 MIN_RESUME_CHARS = 100
 
@@ -248,6 +256,18 @@ def get_client(api_key: str):
     return OpenAI(api_key=api_key, base_url=GROQ_BASE_URL, timeout=120.0)
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def list_chat_models(api_key: str) -> list:
+    """Ask Groq which models this key can use (chat models only)."""
+    try:
+        ids = [m.id for m in get_client(api_key).models.list().data]
+    except Exception:
+        return []
+    chat = [i for i in ids if not any(h in i.lower() for h in NON_CHAT_HINTS)]
+    first = [m for m in PREFERRED_MODELS if m in chat]
+    return first + sorted(m for m in chat if m not in first)
+
+
 def clean_key(key: str) -> str:
     """Remove spaces, newlines and accidental quotes around a pasted key."""
     return (key or "").strip().strip("\"'").strip()
@@ -353,11 +373,15 @@ def main() -> None:
                 type="password",
                 help="Get a key at https://console.groq.com/keys",
             )
-        model = st.text_input(
-            "Model",
-            value=os.getenv("GROQ_MODEL", DEFAULT_MODEL),
-            help="Any chat model available on your Groq account.",
-        )
+        available = list_chat_models(clean_key(api_key)) if api_key else []
+        if available:
+            model = st.selectbox("Model", available, help="Models available on your Groq account.")
+        else:
+            model = st.text_input(
+                "Model",
+                value=os.getenv("GROQ_MODEL", DEFAULT_MODEL),
+                help="Enter a key to load the list of available models, or type a model ID.",
+            )
         st.caption("Your resume is sent to the Groq API for analysis and is not stored by this app.")
 
     uploaded = st.file_uploader("Upload resume", type=["pdf", "docx", "txt"])
