@@ -1,4 +1,4 @@
-"""ATS Resume Checker - Streamlit app powered by the xAI Grok API."""
+"""ATS Resume Checker - Streamlit app powered by the Groq API."""
 
 import io
 import json
@@ -9,8 +9,8 @@ import streamlit as st
 from docx import Document
 from pypdf import PdfReader
 
-XAI_BASE_URL = "https://api.x.ai/v1"
-DEFAULT_MODEL = "grok-4"
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+DEFAULT_MODEL = "llama-3.3-70b-versatile"
 MAX_RESUME_CHARS = 15000
 MIN_RESUME_CHARS = 100
 
@@ -221,7 +221,7 @@ def normalize_result(data: dict) -> dict:
 
 
 def analyze_resume(client, model: str, resume_text: str, job_description: str = "") -> dict:
-    """Call Grok (OpenAI-compatible endpoint) and return a normalized result."""
+    """Call Groq (OpenAI-compatible endpoint) and return a normalized result."""
     messages = build_messages(resume_text, job_description)
     try:
         response = client.chat.completions.create(
@@ -245,15 +245,22 @@ def analyze_resume(client, model: str, resume_text: str, job_description: str = 
 def get_client(api_key: str):
     from openai import OpenAI  # imported lazily so the UI loads even if missing
 
-    return OpenAI(api_key=api_key, base_url=XAI_BASE_URL, timeout=120.0)
+    return OpenAI(api_key=api_key, base_url=GROQ_BASE_URL, timeout=120.0)
+
+
+def clean_key(key: str) -> str:
+    """Remove spaces, newlines and accidental quotes around a pasted key."""
+    return (key or "").strip().strip("\"'").strip()
 
 
 def get_default_api_key() -> str:
+    key = ""
     try:
-        key = st.secrets.get("XAI_API_KEY", "")
+        # GROQ_API_KEY preferred; XAI_API_KEY accepted so an existing secret still works
+        key = st.secrets.get("GROQ_API_KEY", "") or st.secrets.get("XAI_API_KEY", "")
     except Exception:  # no secrets file present
-        key = ""
-    return key or os.getenv("XAI_API_KEY", "")
+        pass
+    return clean_key(key or os.getenv("GROQ_API_KEY", "") or os.getenv("XAI_API_KEY", ""))
 
 
 # --------------------------------------------------------------------------- #
@@ -342,16 +349,16 @@ def main() -> None:
             st.success("API key loaded from secrets / environment.")
         else:
             api_key = st.text_input(
-                "xAI (Grok) API key",
+                "Groq API key",
                 type="password",
-                help="Get a key at https://console.x.ai",
+                help="Get a key at https://console.groq.com/keys",
             )
         model = st.text_input(
             "Model",
-            value=os.getenv("XAI_MODEL", DEFAULT_MODEL),
-            help="Any Grok chat model available on your xAI account.",
+            value=os.getenv("GROQ_MODEL", DEFAULT_MODEL),
+            help="Any chat model available on your Groq account.",
         )
-        st.caption("Your resume is sent to the xAI API for analysis and is not stored by this app.")
+        st.caption("Your resume is sent to the Groq API for analysis and is not stored by this app.")
 
     uploaded = st.file_uploader("Upload resume", type=["pdf", "docx", "txt"])
     job_description = st.text_area(
@@ -361,8 +368,9 @@ def main() -> None:
     )
 
     if st.button("Analyze resume", type="primary", disabled=uploaded is None):
+        api_key = clean_key(api_key)
         if not api_key:
-            st.error("Please enter your xAI API key in the sidebar.")
+            st.error("Please enter your Groq API key in the sidebar.")
             return
         if not model.strip():
             st.error("Please enter a model name.")
@@ -381,15 +389,24 @@ def main() -> None:
             return
 
         try:
-            with st.spinner("Analyzing your resume with Grok..."):
+            with st.spinner("Analyzing your resume..."):
                 client = get_client(api_key)
                 ai = analyze_resume(client, model.strip(), text, job_description)
         except Exception as e:
             msg = str(e)
-            if "401" in msg or ("invalid" in msg.lower() and "key" in msg.lower()):
-                st.error("Authentication failed. Please check your API key.")
+            low = msg.lower()
+            if "401" in msg or "api key" in low or "unauthorized" in low:
+                st.error("Authentication failed. Check that the key is correct, active and "
+                         "from console.groq.com (a Groq key starts with gsk_).")
+            elif "403" in msg or "credit" in low or "permission" in low:
+                st.error("Access denied. Your Groq account may lack "
+                         "access to this model, or you hit a rate limit. Try again or change the model.")
+            elif "404" in low or "model" in low:
+                st.error("Model not found. Change the model name in the sidebar.")
             else:
-                st.error(f"Analysis failed: {msg}")
+                st.error("Analysis failed.")
+            with st.expander("Technical details from the API"):
+                st.code(msg, language=None)
             return
 
         rules = rule_based_checks(text, job_description)
